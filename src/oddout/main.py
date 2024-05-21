@@ -1,15 +1,142 @@
 import contextlib
 import sys
 
+import atexit
 import functools
-import threading
 import shutil
+import textwrap
+import threading
 import time
 
 from html.parser import HTMLParser
 from typing import Any
 
 from colorama import *
+
+from pyoload import *
+
+
+'''
+###############################################################################
+######################## modified extract from colorama #######################
+###############################################################################
+'''
+
+
+CSI = '\033['
+OSC = '\033]'
+BEL = '\a'
+
+
+def code_to_chars(code):
+    return CSI + str(code) + 'm'
+
+
+def set_title(title):
+    return OSC + '2;' + title + BEL
+
+
+def clear_screen(mode=2):
+    return CSI + str(mode) + 'J'
+
+
+def clear_line(mode=2):
+    return CSI + str(mode) + 'K'
+
+
+class AnsiCodes(object):
+    def __init__(self):
+        # the subclasses declare class attributes which are numbers.
+        # Upon instantiation we define instance attributes, which are the same
+        # as the class attributes but wrapped with the ANSI escape sequence
+        for name in dir(self):
+            if not name.startswith('_'):
+                value = getattr(self, name)
+                setattr(self, name, code_to_chars(value))
+
+    def __call__(self, name="reset"):
+        return getattr(self, name.upper())
+
+
+class AnsiCursor(object):
+    def UP(self, n=1):
+        return CSI + str(n) + 'A'
+
+    def DOWN(self, n=1):
+        return CSI + str(n) + 'B'
+
+    def FORWARD(self, n=1):
+        return CSI + str(n) + 'C'
+
+    def BACK(self, n=1):
+        return CSI + str(n) + 'D'
+
+    def POS(self, x=1, y=1):
+        return CSI + str(y) + ';' + str(x) + 'H'
+
+
+class AnsiFore(AnsiCodes):
+    BLACK           = 30
+    RED             = 31
+    GREEN           = 32
+    YELLOW          = 33
+    BLUE            = 34
+    MAGENTA         = 35
+    CYAN            = 36
+    WHITE           = 37
+    RESET           = 39
+
+    # These are fairly well supported, but not part of the standard.
+    LIGHTBLACK_EX   = 90
+    LIGHTRED_EX     = 91
+    LIGHTGREEN_EX   = 92
+    LIGHTYELLOW_EX  = 93
+    LIGHTBLUE_EX    = 94
+    LIGHTMAGENTA_EX = 95
+    LIGHTCYAN_EX    = 96
+    LIGHTWHITE_EX   = 97
+
+
+class AnsiBack(AnsiCodes):
+    BLACK           = 40
+    RED             = 41
+    GREEN           = 42
+    YELLOW          = 43
+    BLUE            = 44
+    MAGENTA         = 45
+    CYAN            = 46
+    WHITE           = 47
+    RESET           = 49
+
+    # These are fairly well supported, but not part of the standard.
+    LIGHTBLACK_EX   = 100
+    LIGHTRED_EX     = 101
+    LIGHTGREEN_EX   = 102
+    LIGHTYELLOW_EX  = 103
+    LIGHTBLUE_EX    = 104
+    LIGHTMAGENTA_EX = 105
+    LIGHTCYAN_EX    = 106
+    LIGHTWHITE_EX   = 107
+
+
+class AnsiStyle(AnsiCodes):
+    BRIGHT    = 1
+    DIM       = 2
+    NORMAL    = 22
+    RESET_ALL = 0
+
+
+Fore   = AnsiFore()
+Back   = AnsiBack()
+Style  = AnsiStyle()
+Cursor = AnsiCursor()
+
+
+'''
+###############################################################################
+################################## extract end ################################
+###############################################################################
+'''
 
 init()
 width, height = shutil.get_terminal_size()
@@ -20,43 +147,35 @@ def update_terminal_sizes():
     width, height = shutil.get_terminal_size()
 
 
-class FakeStdout:
-    write = sys.stdout.write
-
-
-
-fake_stdout = FakeStdout()
-_print  = functools.partial(print, file=fake_stdout)
-
-
 def em(text, border_color="green", text_color="white"):
     f_b = Fore(border_color)
-    f_r = Fore("reset")
     f_t = Fore(text_color)
-    text = textwrap.wrap(text, width-2)
+    text = textwrap.wrap(text, width - 2)
     mw = max(map(len, text))
     lo = (width - 1 - mw) // 2
-    _print(f_b+width*'─')
+    print(f_b + width * '─')
     for ln in text:
-        ln = '> '+ln+';'
-        _print(f_t+lo*' '+ln)
-    _print(f_b+width*'─')
+        ln = '> ' + ln + ';'
+        print(f_t + lo * ' ' + ln)
+    print(f_b + width * '─')
+
 
 def error(e):
     em(
-        e.__class__.__name__+": "+str(e),
+        e.__class__.__name__ + ": " + str(e),
         border_color="red",
-        text_color = "red"
+        text_color="red"
     )
 
-def ellipsis(le=3, ch='.', s =' '):
+
+def ellipsis(le=3, ch='.', s=' '):
     i = 0
-    _print("   ", end="")
+    print("   ", end="")
     while True:
         yield
         i += 1
-        i %= (le+1)
-        _print("\b\b\b"+(i*ch).ljust(le, s), end="")
+        i %= (le + 1)
+        print((i * ch).ljust(le, s), end=Cursor.BACK(3))
 
 
 @contextlib.contextmanager
@@ -66,19 +185,28 @@ def Errors():
     except Exception as e:
         error(e)
 
+
 class BaseHandle:
     sub_handles = []
     child: Any = None
+    name = 'base'
 
     def __enter__(self):
         pass
 
-    def __leave__(self, e):
-        pass
+    def __leave__(self):
+        del self
+
+    def __del__(self):
+        atexit.unregister(self.__leave__)
+        if hasattr(super(), '__del__'):
+            super().__del__()
 
     def __init__(self, attrs):
         self.attrs = attrs
         self.__enter__()
+
+        atexit.register(self.__leave__)
 
     def __init_subclass__(cls):
         BaseHandle.sub_handles.append(cls)
@@ -89,24 +217,50 @@ class BaseHandle:
                 sub = handle(attrs)
                 self.child = sub
                 scope.append(sub)
+        else:
+            error(f'TagError: tag {name!r} unknown')
 
     def endtag(self, name):
         if name == self.name:
             for _ in range(len(scope) - scope.index(self)):
                 scope.pop()
             self.__leave__()
+
     def tag(self, name, attrs):
         pass
+
+    def data(self, data):
+        print(data.strip())
 ###############################################################################
+
+
 class ProgressBar(BaseHandle):
+    @annotate
+    def register(max: Cast(float), val: Cast(float) = 0, alpha: float = 0.3):
+        t1 = time.perf_counter()  # the current time from unknown origin
+        last = 0
+        speed = 0
+        calls = 0
+        remaining = 0
+        while True:
+            with Errors():  # all errors formatted to stdout
+                new = yield (last, speed, remaining)
+            a, b = alpha, 1 - alpha
+            new = a * last + b * new
+            last = last / (1 - b ** calls) if calls else last
+
     name = "progressbar"
+
+    @annotate
     def __enter__(self):
         self.t = time.perf_counter()
         self.lastSpeed = self.calls = self.last = self.lastVal = 0
         self.alpha = float(self.attrs.get(alpha), 0.3)
         self.max = float(self.attrs.get(max), 100)
-        self.procs = {}
         self.main_proc_name = self.attrs.get("name", "main")
+        self.procs = {
+            self.main_proc_name: 0
+        }
 
     def tag(self, name, attrs):
         if name == "progress":
@@ -114,62 +268,16 @@ class ProgressBar(BaseHandle):
             try:
                 val = attrs["value"]
             except IndexError:
-                return error(ValueError("Called progress without specifying value"))
+                return error(
+                    ValueError('Called progress without specifying value'),
+                )
             self.procs[proc_name] = val
         self.update()
+
     def update(self, char='-'):
         update_terminal_sizes()
 
-        vals = []
 
-        i = 0
-        for x in others:
-            i += 1
-            if isinstance(x, tuple) and len(x) >= 2:
-                m, c = x[0], x[1]
-                msg = x[2] if len(x) >= 3 else 'proc %d'%i
-                vals.append((m, Fore(c), msg))
-        assert per <= self.max
-        self.calls += 1
-        t2 = time.perf_counter()
-        dt = t2-self.t
-        ds = per - self.lastVal
-        speed = ds/dt
-        a, b = self.alpha, 1-self.alpha
-        self.last = a * speed + b * self.last
-        speed = self.last / (1 - b ** self.calls) if self.calls else self.last
-        if speed > 0:
-            t = (self.max - per) / speed
-            m = t // 60
-            s = t // 1 % 60
-            cs = (t*100) // 1 % 100
-            remain = f"{int(m):02d}:{int(s):02d}:{int(cs):02d}"
-        else:
-            remain = "  :  :  "
-        mw = width - 20
-
-
-        lv = sum(x[0] for x in vals)
-
-
-        assert lv <= per, "sum of rest: %d is more than: %d"%(lv, p)
-        vals.append((per- lv, Fore("reset"), "main"))
-        txt = f"\r{Fore('BLUE')}["
-        for length, color, _ in vals:
-            txt += color + int(
-                length/self.max*mw
-            )*char + Fore(
-                "reset"
-            )
-        txt += ' '*(mw-txt.count('-'))
-        print(txt + f"{Fore('blue')}]{Fore()} {int(per/self.max*100):02d}% eta {remain}",end="\r")
-        for i, c in enumerate(vals):
-            length, color, msg = c
-            if msg == "main":
-                length = per
-            print(Cursor.DOWN(1), color+msg+": "+format(float(length), '.2f'), end="\r")
-        self.height = i+2
-        print(Cursor.UP(i+1), end="")
 
     def __exit__(self):
         print(Cursor.DOWN(self.height), end="\r")
@@ -210,9 +318,9 @@ class Ellipsis(BaseHandle):
         elif name == "play":
             self.do_pause(False)
         else:
-            super().tag(name,attrs)
+            super().tag(name, attrs)
 
-    def inner(self, ):
+    def inner(self):
         e = ellipsis(self.len)
         for _ in e:
             if self.stop:
@@ -234,17 +342,38 @@ class OddoutParser(HTMLParser):
         scope[-1].endtag(name)
 
     def handle_data(self, data):
-        _print(data)
+        scope[-1].data(data)
 
     def handel_startendtag(self, name, attrs):
         scope[-1].tag(name, attrs)
 
-def wrap():
-    global orig_stdout
-    parser = OddoutParser()
-    orig_stdout_write = sys.stdout.write
-    sys.stdout.write = parser.feed
+    def handle_pi(self, text):
+        if text[0] == '=':
+            with Errors():
+                print(eval(text[1:]))
+        else:
+            exec(text, globals(), locals())
 
 
-wrap()
+parser = OddoutParser()
 
+
+def oddout(data):
+    parser.feed(data)
+
+
+
+"""oddout('''\
+<ellipsis>
+    <?="hello world">
+    <?time.sleep(2)>
+    <?="hello world again">
+    <?time.sleep(2)>
+</ellipsis>
+''')"""
+
+r = ProgressBar.register(max=100)
+next(r)
+for i in range(100):
+    print(r.send(i))
+    time.sleep(1)
