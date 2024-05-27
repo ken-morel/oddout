@@ -11,9 +11,11 @@ import time
 from html.parser import HTMLParser
 from typing import Any
 
-from colorama import *
+import colorama
 
 from pyoload import *
+
+colorama.just_fix_windows_console()
 
 
 '''
@@ -138,7 +140,6 @@ Cursor = AnsiCursor()
 ###############################################################################
 '''
 
-init()
 width, height = shutil.get_terminal_size()
 
 
